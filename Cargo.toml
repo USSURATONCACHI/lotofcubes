@@ -1,0 +1,17 @@
+[package]
+name = "lotofcubes"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+sdl2 = "0.35.2"
+image = "0.24.1"
+gl = "0.14.0"
+path-dedot = "3.0.17"
+regex = "1.5.5"
+lazy_static = "1.4.0"
+
+[build-dependencies]
+walkdir = "*"

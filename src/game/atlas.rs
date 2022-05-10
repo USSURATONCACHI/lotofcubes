@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use image::{DynamicImage, GenericImage, GenericImageView, Rgba};
 use crate::game::get_first_word;
 use crate::mat::Vec4;
+use crate::{Program, rgl};
 use crate::resources::Resources;
 
 pub struct Atlas {
@@ -52,6 +53,40 @@ impl Atlas {
     pub fn tex_width(&self) -> u32 { self.texture_size.0 }
     pub fn tex_height(&self) -> u32 { self.texture_size.1 }
     pub fn tex_size(&self) -> (u32, u32) { self.texture_size }
+
+    pub fn load_materials_to_shader<S: Into<String>>(&self, program: &Program, uniform_name: S) {
+        let name: String = uniform_name.into();
+
+        program.set_used();
+        unsafe {
+            println!("Warning: game/atlas.rs/Atlas::load_materials_to_shader (line 57 rn) : REFACTOR THIS!!!");
+            for (i, m) in self.textures().into_iter().enumerate() {
+                let loc_name = format!("{}[{}].color_textures_count", name, i);
+                let loc = rgl::uniform_loc(program.id(), loc_name.as_str());
+                gl::Uniform1i(loc, m.textures_count as i32);
+
+                let loc_name = format!("{}[{}].normal_textures_count", name, i);
+                let loc = rgl::uniform_loc(program.id(), loc_name.as_str());
+                gl::Uniform1i(loc, m.normals_count as i32);
+
+                let loc_name = format!("{}[{}].light_textures_count", name, i);
+                let loc = rgl::uniform_loc(program.id(), loc_name.as_str());
+                gl::Uniform1i(loc, m.lightmaps_count as i32);
+
+                let loc_name = format!("{}[{}].color_texture_id", name, i);
+                let loc = rgl::uniform_loc(program.id(), loc_name.as_str());
+                gl::Uniform1i(loc, m.tex_id as i32);
+
+                let loc_name = format!("{}[{}].normal_texture_id", name, i);
+                let loc = rgl::uniform_loc(program.id(), loc_name.as_str());
+                gl::Uniform1i(loc, m.norm_id as i32);
+
+                let loc_name = format!("{}[{}].light_texture_id", name, i);
+                let loc = rgl::uniform_loc(program.id(), loc_name.as_str());
+                gl::Uniform1i(loc, m.lgmp_id as i32);
+            }
+        }
+    }
 }
 
 

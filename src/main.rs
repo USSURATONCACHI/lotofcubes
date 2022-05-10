@@ -5,13 +5,13 @@ extern crate gl;
 extern crate core;
 
 use std::f32::consts::PI;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 use image::DynamicImage;
 use sdl2::event::{Event, WindowEvent};
 use sdl2::video::{GLContext, SwapInterval, Window};
 use sdl2::VideoSubsystem;
-use crate::game::{DenseBools};
+use crate::game::DenseBools;
 use crate::input::Input;
 use crate::mat::Mat4;
 use crate::rgl::{Model, Program};
@@ -23,55 +23,46 @@ pub mod input;
 pub mod util;
 pub mod game;
 pub mod glsl_expand;
-
+/*
+TODO:
+Предупреждение о повторяющихся юнифомах в Program
+Нормальную иерархию рендера в мейне
+Нормальный лог ошибок и варнингов в glsl_extend
+В нем же правку директивы #version
+*/
 fn main() {
     let mut input = input::Input::new();
     let mut res = resources::Resources::from_relative(Path::new("assets")).unwrap();
 
     let mut window_data = WindowData::create_window("A lot of cubes", 800, 600);
 
-    let program = rgl::Program::from_res(&mut res, "shaders/main_no_nm", vec![
-        "u_texture_atlas", "u_textures_data",
-        "u_shadow_map",
-        "u_projection", "u_view", "u_model",
-        "u_atlas_size", "u_texture_size",
-        "u_light_direction", "u_camera_pos",
-        "u_light_projview",
-    ]).unwrap();
+    let geometry_pass = Program::from_res(&mut res, "shaders/deferred_rendering/geometry_pass",
+      vec![
+          "u_projview", "u_model", "u_light_projview",
+          "u_materials", "u_texture_atlas",
+          "u_atlas_size", "u_texture_size",
+          "u_light_direction", "u_camera_pos",
+      ]).unwrap();
 
-
-    let shadow_program = rgl::Program::from_res(&mut res, "shaders/shadow", vec!["projection", "view", "model"]).unwrap();
-    let display_program = rgl::Program::from_res(&mut res, "shaders/display", vec!["u_shadow_map"]).unwrap();
-    let display_model = tmp_display_model();
+    let lighting_pass = Program::from_res(&mut res, "shaders/deferred_rendering/lighting_pass",
+      vec![
+          "g_position", "g_normal", "g_color", "g_light",
+          "u_light_direction", "u_camera_pos",
+      ]).unwrap();
 
     let mut plr: game::Player = game::Player::new();
-
     let game = game::Game::new(&res);
 
-    program.set_used();
-    let textures_data: Vec<i32> = {
-        let data: Vec<(i32, i32, i32, i32, i32, i32)> = game.atlas().textures().iter()
-            .map(|tex_data| (tex_data.textures_count as i32, tex_data.normals_count as i32, tex_data.lightmaps_count as i32,
-                             tex_data.tex_id as i32, tex_data.norm_id as i32, tex_data.lgmp_id as i32))
-            .collect();
-        let mut raw: Vec<i32> = [0i32].to_vec().iter().cycle().take(100).map(|x|*x).collect();
-        for (i, d) in  data.iter().enumerate() {
-            raw[i * 6 + 0] = d.0;
-            raw[i * 6 + 1] = d.1;
-            raw[i * 6 + 2] = d.2;
-            raw[i * 6 + 3] = d.3;
-            raw[i * 6 + 4] = d.4;
-            raw[i * 6 + 5] = d.5;
-        }
+    geometry_pass.set_used();
+    game.atlas().load_materials_to_shader(&geometry_pass, "u_materials");
 
-        raw
-    };
-
-    program.uniform1iv(1, &textures_data); //Данные о расположении текстур на атласе
-    program.uniform2f(6, game.atlas().width() as f32, game.atlas().height() as f32); //Линейный размер атласа
-    program.uniform2f(7, game.atlas().tex_width() as f32, game.atlas().tex_height() as f32);  //Линейный размер текстуры
+    //atlas_size
+    geometry_pass.uniform2f(5, game.atlas().width() as f32, game.atlas().height() as f32);
+    //texture_size
+    geometry_pass.uniform2f(6, game.atlas().tex_width() as f32, game.atlas().tex_height() as f32);
 
     let _ = load_to_gpu_with_mipmaps(0, game.atlas().image(), 4, (15, 15));
+    geometry_pass.uniform1i(4, 0);
 
     let max_dist = 12;
     let (chunks, blocks) = tmp_create_models(max_dist, &game);
@@ -84,15 +75,15 @@ fn main() {
     ////////
     let depth_map_width = 2048_i32;
     let depth_map_height = 2048_i32;
-    let (depth_map_fbo, depth_map_texture) = generate_depth_map(depth_map_width, depth_map_height);
+    //let (depth_map_fbo, depth_map_texture) = generate_depth_map(depth_map_width, depth_map_height);
     let light_proj_mat = {
         let near: f32 = -500.0;
         let far: f32 = 500.0;
         let ortho_width = 40.0_f32;
         mat::Mat4::orthographic_mat(-ortho_width, ortho_width, -ortho_width, ortho_width, far, near)
-    };
+    };/*
     shadow_program.set_used();
-    shadow_program.uniform_mat4(0, &light_proj_mat);
+    shadow_program.uniform_mat4(0, &light_proj_mat);*/
 
 
     let mut models_list = ModelList::new();
@@ -117,6 +108,11 @@ fn main() {
     }
 
     let mut prev_frame: f64 = current_time();
+
+    ////////
+    let (g_framebuffer, g_position, g_normal, g_color, g_light) = gen_framebuffer(1366, 768);
+
+    let fullscreen_square = tmp_display_model();
 
     let mut fps_counter = util::TickCounter::new(30);
     let mut event_pump = window_data.sdl.event_pump().unwrap();
@@ -156,47 +152,61 @@ fn main() {
         let light_direction = (-PI / 4.0, timed_ang(0.1));
         let light_vec = mat::Mat4::rotation_mat(light_direction.0, 0.0, light_direction.1) * mat::Vec4::new(0.0, 1.0, 0.0, 0.0);
         let light_view_mat = mat::Mat4::cam_mat(light_direction.0, -light_direction.1, plr.x as f32, plr.y as f32, plr.z as f32);
-        shadow_program.set_used();
-        shadow_program.uniform_mat4(1, &light_view_mat);
+        /*shadow_program.set_used();
+        shadow_program.uniform_mat4(1, &light_view_mat);*/
         let light_projview = light_proj_mat * light_view_mat;
 
         unsafe {
-            shadow_program.set_used();
+            /*shadow_program.set_used();
             gl::Viewport(0, 0, depth_map_width, depth_map_height);
             gl::BindFramebuffer(gl::FRAMEBUFFER, depth_map_fbo);
             gl::Clear(gl::DEPTH_BUFFER_BIT);
-            models_list.render_all(&shadow_program, 2);
-
-            program.set_used();
-            gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
-            gl::Viewport(0, 0, window_data.width as i32, window_data.height as i32);
-            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
-
-            gl::ActiveTexture(gl::TEXTURE0 + 1);
-            gl::BindTexture(gl::TEXTURE_2D, depth_map_texture);
-            program.uniform1i(2, 1);
-            display_program.set_used();
-            display_program.uniform1i(0, 1);
+            models_list.render_all(&shadow_program, 2);*/
 
             let view_mat = mat::Mat4::cam_mat(plr.ang_vert as f32, plr.ang_horz as f32, plr.x as f32, plr.y as f32, plr.z as f32);
             let proj_mat = mat::Mat4::perspective_mat(std::f32::consts::PI / 2.0, (window_data.width() as f32) / (window_data.height() as f32), 0.05, 1024.0);
 
-            program.set_used();
-            program.uniform1i(0, 0);
-            program.uniform_mat4(3, &proj_mat);
-            program.uniform_mat4(4, &view_mat);
-            program.uniform_mat4(10, &light_projview);
+            //Geometry pass
+            gl::BindFramebuffer(gl::FRAMEBUFFER, g_framebuffer);
+            gl::Viewport(0, 0, 1366, 768);
+            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+            geometry_pass.set_used();
+            let u_projview = proj_mat * view_mat;
+            geometry_pass.uniform_mat4(0, &u_projview);
+            geometry_pass.uniform_mat4(2, &light_projview);
 
-            program.uniform3f(8, light_vec.x(), light_vec.y(), light_vec.z());
-            program.uniform3f(9, plr.x as f32, plr.y as f32, plr.z as f32);
-
-            models_list.render_all(&program, 5);
-
+            geometry_pass.uniform3f(7, light_vec.x, light_vec.y, light_vec.z);
+            geometry_pass.uniform3f(8, plr.x as f32, plr.y as f32, plr.z as f32);
+            models_list.render_all(&geometry_pass, 1);
             models_list.finish_render();
 
-            display_program.set_used();
-            display_model.render();
-            gl::BindVertexArray(0);
+            //Lighting pass
+            gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+            gl::Viewport(0, 0, window_data.width as i32, window_data.height as i32);
+            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+
+            gl::ActiveTexture(gl::TEXTURE1);
+            gl::BindTexture(gl::TEXTURE_2D, g_position);
+
+            gl::ActiveTexture(gl::TEXTURE2);
+            gl::BindTexture(gl::TEXTURE_2D, g_normal);
+
+            gl::ActiveTexture(gl::TEXTURE3);
+            gl::BindTexture(gl::TEXTURE_2D, g_color);
+
+            gl::ActiveTexture(gl::TEXTURE4);
+            gl::BindTexture(gl::TEXTURE_2D, g_light);
+
+            lighting_pass.set_used();
+            lighting_pass.uniform1i(0, 1);
+            lighting_pass.uniform1i(1, 2);
+            lighting_pass.uniform1i(2, 3);
+            lighting_pass.uniform1i(3, 4);
+
+            lighting_pass.uniform3f(4, light_vec.x, light_vec.y, light_vec.z);
+            lighting_pass.uniform3f(5, plr.x as f32, plr.y as f32, plr.z as f32);
+
+            fullscreen_square.render();
         }
 
         prev_frame = frame_start;
@@ -286,7 +296,7 @@ impl WindowData {
 
         unsafe {
             gl::Viewport(0, 0, w as i32, h as i32);
-            gl::ClearColor(35.0/255.0, 61.0/255.0, 1.0, 1.0);
+            gl::ClearColor(0.0, 0.0, 0.0, 1.0);
             gl::Enable(gl::CULL_FACE);
             gl::Enable(gl::DEPTH_TEST);
             //gl::Enable(gl::MULTISAMPLE);
@@ -405,38 +415,46 @@ fn generate_depth_map(w: i32, h: i32) -> (u32, u32) {
 
     (depth_map_fbo, depth_map)
 }
-/*
-fn gen_framebuffer(width: u32, height: u32) {
+
+fn gen_framebuffer(width: u32, height: u32) -> (u32, u32, u32, u32, u32) {
     let width = width as i32;
     let height = height as i32;
     unsafe {
-        fn gen_buffer(width: i32, height: i32, a: i32, b: i32, data_type: i32, attachment: i32) -> u32 {
+        unsafe fn gen_buffer(width: i32, height: i32, internal_format: i32, format: u32, data_type: u32, attachment: u32) -> u32 {
             let mut buffer = 0;
-            gl::GenTextures(1, &buffer);
+            gl::GenTextures(1, &mut buffer);
+            gl::ActiveTexture(gl::TEXTURE15);
             gl::BindTexture(gl::TEXTURE_2D, buffer);
-            gl::TexImage2D(gl::TEXTURE_2D, 0, a, width, height, 0, b, data_type, std::ptr::null());
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST);
-            gl::FramebufferTexture2D(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0 + attachment, gl::TEXTURE_2D, buffer, 0);
+            gl::TexImage2D(gl::TEXTURE_2D, 0, internal_format, width, height, 0, format, data_type, std::ptr::null());
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+            gl::FramebufferTexture2D(gl::FRAMEBUFFER, attachment, gl::TEXTURE_2D, buffer, 0);
             buffer
         }
         let mut g_buffer: u32 = 0;
         gl::GenFramebuffers(1, &mut g_buffer);
         gl::BindFramebuffer(gl::FRAMEBUFFER, g_buffer);
-        // буфер позиций
-        let g_position: u32  = gen_buffer(width, height, gl::RGB16F as i32, gl::RGB, gl::FLOAT, 0);
-        // буфер нормалей
-        let g_normal: u32    = gen_buffer(width, height, gl::RGB16F, gl::RGB, gl::FLOAT, 1);
-        // буфер для цвета + коэффициента зеркального отражения
-        let g_color: u32     = gen_buffer(width, height, gl::RGBA, gl::RGBA, gl::UNSIGNED_BYTE, 2);
+        // Буффер позиций фрагментов
+        let g_position: u32  = gen_buffer(width, height, gl::RGB32F as i32, gl::RGB, gl::FLOAT, gl::COLOR_ATTACHMENT0);
+        // Буффер нормалей фрагментов
+        let g_normal: u32    = gen_buffer(width, height, gl::RGB32F as i32, gl::RGB, gl::FLOAT, gl::COLOR_ATTACHMENT1);
+        // Буффер цветов фрагментов
+        let g_color: u32     = gen_buffer(width, height, gl::RGB as i32, gl::RGB, gl::UNSIGNED_BYTE, gl::COLOR_ATTACHMENT2);
+        // Буффер взаимодействия фрагментов со светом
+        let g_light: u32     = gen_buffer(width, height, gl::RGB as i32, gl::RGB, gl::FLOAT, gl::COLOR_ATTACHMENT3);
+
+        // буффер глубины
+        let _g_depth: u32     = gen_buffer(width, height, gl::DEPTH_COMPONENT as i32, gl::DEPTH_COMPONENT, gl::FLOAT, gl::DEPTH_ATTACHMENT);
 
         // укажем OpenGL, какие буферы мы будем использовать при рендеринге
-        let attachments: &[u32; 3] = vec![ gl::COLOR_ATTACHMENT0, gl::COLOR_ATTACHMENT1, gl::COLOR_ATTACHMENT2 ].as_slice();
-        gl::DrawBuffers(3, attachments);
+        let attachments = vec![ gl::COLOR_ATTACHMENT0, gl::COLOR_ATTACHMENT1, gl::COLOR_ATTACHMENT2, gl::COLOR_ATTACHMENT3, gl::DEPTH_ATTACHMENT ];
+        gl::DrawBuffers(3, attachments.as_ptr());
         // После так же добавим буфер глубины и проверку на валидность фреймбуфера.
+
+        (g_buffer, g_position, g_normal, g_color, g_light)
     }
 }
-*/
+
 
 //
 fn _load_texture_to_gpu<T>(texture: u32, image: &DynamicImage) -> u32 {
@@ -528,10 +546,10 @@ fn tmp_create_models(max_dist: i32, game: &game::Game) -> (Vec<(game::Chunk, Mod
             let mut indices: Vec<u32> = vec![];
 
             let model: &game::BlockModel = &game.models()[block.model_id];
-            model.add_to_model(mat::Vec3::new(0.0, 0.0, 0.0), 0, &mut vertices, &mut indices, &block.textures);
+            model.add_to_model(mat::Vec3::new(0.0, 0.0, 0.0), 0, 0, &mut vertices, &mut indices, &block.textures);
 
             use game::AttribType::*;
-            let attributes: Vec<game::AttribType> = vec![Vec3, Vec3, Vec3, Vec3, Vec2, Float];
+            let attributes: Vec<game::AttribType> = vec![Vec3, Vec3, Vec3, Vec3, Vec2, Int, Int];
             game::texture_model(&vertices, &indices, &attributes)
         };
         blocks.push(block);
@@ -541,7 +559,7 @@ fn tmp_create_models(max_dist: i32, game: &game::Game) -> (Vec<(game::Chunk, Mod
 }
 
 fn tmp_display_model() -> Model {
-    let max = -0.75;
+    let max = 1.0;
     let vertices: Vec<f32> = vec![
         -1.0, -1.0, 0.0, 0.0, 0.0,
         -1.0,  max, 0.0, 0.0, 1.0,

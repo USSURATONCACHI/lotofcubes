@@ -222,7 +222,7 @@ impl Drop for Program {
 	}
 }
 
-fn uniform_loc(program_id: u32, name: &str) -> i32 {
+pub fn uniform_loc(program_id: u32, name: &str) -> i32 {
     unsafe {
         let name = std::ffi::CString::new(name).unwrap();
         return gl::GetUniformLocation(program_id, name.as_ptr() as *const i8)

@@ -23,7 +23,7 @@ impl DenseBools {
 }
 
 pub enum AttribType {
-    Vec3, Vec2, Float, Basis
+    Vec3, Vec2, Float, Basis, Int
 }
 impl AttribType {
     pub fn size(&self) -> usize {
@@ -32,6 +32,7 @@ impl AttribType {
             Self::Vec2 =>   { std::mem::size_of::<f32>() * 2 }
             Self::Float =>  { std::mem::size_of::<f32>() * 1 }
             Self::Basis =>  { std::mem::size_of::<f32>() * 9 }
+            Self::Int =>    { std::mem::size_of::<i32>() * 1 }
         }
     }
     pub fn data_type(&self) -> (i32, gl::types::GLuint) {
@@ -40,6 +41,13 @@ impl AttribType {
             Self::Vec2 =>   { (2, gl::FLOAT) }
             Self::Float =>  { (1, gl::FLOAT) }
             Self::Basis =>  { (9, gl::FLOAT) }
+            Self::Int =>    { (1, gl::INT) }
+        }
+    }
+    pub fn is_int(&self) -> bool {
+        match self {
+            Self::Int => true,
+            _ => false,
         }
     }
 }
@@ -70,9 +78,14 @@ pub fn texture_model(vertices: &Vec<Vertex>, indices: &Vec<u32>, attribs: &Vec<A
         for (i, attr) in attribs.iter().enumerate() {
             let (numbers_count, data_type) : (i32, gl::types::GLuint) = attr.data_type();
             gl::EnableVertexAttribArray(i as u32);
-            gl::VertexAttribPointer( i as u32, numbers_count, data_type,
-                                     gl::FALSE, stride,
-                                     offset as *const gl::types::GLvoid);
+            if attr.is_int() {
+                gl::VertexAttribIPointer( i as u32, numbers_count, data_type,
+                                         stride, offset as *const gl::types::GLvoid);
+            } else {
+                gl::VertexAttribPointer( i as u32, numbers_count, data_type,
+                                         gl::FALSE, stride,
+                                         offset as *const gl::types::GLvoid);
+            }
             offset += attr.size();
         }
 

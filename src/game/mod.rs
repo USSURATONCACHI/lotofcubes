@@ -83,7 +83,7 @@ pub struct ShapeVertex {
     tangent_x: Vec3,    //Касательная, указывающая направление +х текстуры
     tangent_y: Vec3,    //Касательная, указывающая направление +y текстуры
 
-    tex_x:  f32,        //Позиция пикселя на текстуре
+    tex_x:  f32,        //Позиция вершины на текстуре
     tex_y:  f32,
 }
 impl ShapeVertex {
@@ -98,12 +98,10 @@ impl ShapeVertex {
             tex_x, tex_y
         }
     }
-    fn to_vertex(&self, offset: Vec3, tangent_x: Vec3, tangent_y: Vec3, tex_id: f32) -> Vertex {
+    fn to_vertex(&self, offset: Vec3, material_id: i32, random: i32) -> Vertex {
         let mut res = self.clone();
         res.pos += offset;
-        res.tangent_x = tangent_x;
-        res.tangent_y = tangent_y;
-        Vertex::new(res, tex_id)
+        Vertex::new(res, material_id, random)
     }
 
     fn x(&self) -> f32 { self.pos.x() }
@@ -233,11 +231,12 @@ impl BMShape {
 #[derive(Copy, Clone, Debug)]
 pub struct Vertex {
     shape_vert: ShapeVertex,
-    tex_id: f32,
+    material_id: i32,
+    random: i32,
 }
 impl Vertex {
-    fn new(shape_vert: ShapeVertex, tex_id: f32) -> Self {
-        Vertex{ shape_vert, tex_id }
+    fn new(shape_vert: ShapeVertex, material_id: i32, random: i32) -> Self {
+        Vertex{ shape_vert, material_id, random }
     }
 }
 
@@ -308,20 +307,22 @@ impl BlockModel {
         overlap_state   - закрытость блока по сторонам
         pos             - позиция блока
         atlas_size      - размер атласа*/
-    pub fn add_to_model(&self, pos: Vec3, overlap_state: u8, vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, textures: &Vec<u32>) {
+    pub fn add_to_model(&self, pos: Vec3, overlap_state: u8, random: i32, vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, textures: &Vec<u32>) {
         if textures.len() < self.shapes.len() { panic!("Not enough textures passed to BlockModel") }
 
         for (group_id, group) in self.shapes.iter().enumerate() {
-            let tex_id = 1.0_f32 / (textures[group_id] as f32 + 1.0);
+            let material_id = textures[group_id];
 
             for shape in group.iter() {
                 //Если фигура перекрыта другими блоками - пропуск
-                if shape.is_dependent() && ( overlap_state & shape.overlap_state.0 == shape.overlap_state.0 ) { continue; }
+                if shape.is_dependent() && ( overlap_state & shape.overlap_state.0 == shape.overlap_state.0 ) {
+                    continue;
+                }
 
                 let start_index = vertices.len() as u32;
                 //Добавление вершин
                 for v in shape.vertices.iter() {
-                    vertices.push(v.to_vertex(pos, Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), tex_id) );
+                    vertices.push(v.to_vertex(pos, material_id as i32, random) );
                 }
                 //Добавление индексов
                 for i in shape.indices.iter() {
@@ -691,10 +692,25 @@ impl Chunk {
             for y in 0..CHUNK_SIZE {
                 for z in 0..CHUNK_SIZE {
                     let id = Chunk::pos_id(x, y, z);
-                    if self.data[id].0 == 0 { continue; }
+                    if self.data[id].0 == 0 {
+                        continue;
+                    }
+                    let random: i32 = {
+                        use std::num::Wrapping;
+                        let x = Wrapping(self.x * (CHUNK_SIZE as i32) + (x as i32));
+                        let y = Wrapping(self.y * (CHUNK_SIZE as i32) + (y as i32));
+                        let z = Wrapping(self.z * (CHUNK_SIZE as i32) + (z as i32));
+                        #[allow(overflowing_literals)]
+                        {
+                            let random = x*y*z + x*y + x*x + y*z + x + y + z;
+                            let random = (random ^ Wrapping(0xF7B2132A)) * Wrapping(0xBB12A45F);
+                            let random = random ^ Wrapping((random.0 as f32).sqrt() as i32) ^ (random * random);
+                            random ^ Wrapping((random.0 as f32).sqrt() as i32) ^ (random * random)
+                        }
+                    }.0;
                     models_data[blocks_data[self.data[id].0 as usize].model_id].add_to_model(
                         mat::Vec3::new(x as f32, y as f32, z as f32),
-                        self.data[id].1.0,
+                        self.data[id].1.0, random,
                         &mut vertices, &mut indices,
                         &blocks_data[self.data[id].0 as usize].textures,
                     );
@@ -704,7 +720,7 @@ impl Chunk {
 
         use AttribType::*;
         //Position, Normal, Tangent X, Tangent Y, Tex Coordinates, Texture_ID
-        let attributes: Vec<AttribType> = vec![Vec3, Vec3, Vec3, Vec3, Vec2, Float];
+        let attributes: Vec<AttribType> = vec![Vec3, Vec3, Vec3, Vec3, Vec2, Int, Int];
         texture_model(&vertices, &indices, &attributes)
     }
 
